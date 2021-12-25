@@ -42,8 +42,6 @@ const mockAdapterSupportsBackup = jest.fn().mockReturnValue(true);
 const mockAdapterReset = jest.fn();
 const mockAdapterStop = jest.fn();
 const mockAdapterStart = jest.fn().mockReturnValue('resumed');
-const mockAdapterSetLED = jest.fn();
-const mockAdapterSupportsLED = jest.fn().mockReturnValue(true);
 const mockAdapterSetTransmitPower = jest.fn();
 const mockAdapterGetCoordinator = jest.fn().mockReturnValue({
     ieeeAddr: '0x123',
@@ -131,7 +129,7 @@ const restoreMocksendZclFrameToEndpoint = () => {
     })
 }
 
-const mocksClear = [mocksendZclFrameToEndpoint, mockAdapterReset, mocksendZclFrameToGroup, mockSetChannelInterPAN, mocksendZclFrameInterPANToIeeeAddr, mocksendZclFrameInterPANBroadcast, mockRestoreChannelInterPAN, mockAdapterSetLED];
+const mocksClear = [mocksendZclFrameToEndpoint, mockAdapterReset, mocksendZclFrameToGroup, mockSetChannelInterPAN, mocksendZclFrameInterPANToIeeeAddr, mocksendZclFrameInterPANBroadcast, mockRestoreChannelInterPAN];
 const deepClone = (obj) => JSON.parse(JSON.stringify(obj));
 
 const equalsPartial = (object, expected) => {
@@ -224,6 +222,12 @@ const mockDevices = {
         simpleDescriptor: 'error',
         attributes: {},
     },
+    174: {
+        nodeDescriptor: {type: 'EndDevice', manufacturerCode: 1213},
+        activeEndpoints: {endpoints: [1]},
+        simpleDescriptor: {1: {endpointID: 1, deviceID: 5, inputClusters: [0,32], outputClusters: [2], profileID: 99}},
+        attributes: {},
+    },
 }
 
 const mockZclFrame = ZclFrame;
@@ -301,8 +305,6 @@ jest.mock('../src/adapter/z-stack/adapter/zStackAdapter', () => {
             backup: () => {return mockDummyBackup; },
             getCoordinatorVersion: () => {return {type: 'zStack', meta: {version: 1}}},
             getNetworkParameters: mockAdapterGetNetworkParameters,
-            setLED: mockAdapterSetLED,
-            supportsLED: mockAdapterSupportsLED,
             waitFor: mockAdapterWaitFor,
             setTransmitPower: mockAdapterSetTransmitPower,
             nodeDescriptor: async (networkAddress) => {
@@ -562,6 +564,7 @@ describe('Controller', () => {
                      clusters: {},
                      deviceIeeeAddress: '0x123',
                      deviceNetworkAddress: 123,
+                     defaultSendWhenActive: false,
                      _binds: [],
                      _configuredReportings: [] },
                    { deviceID: 5,
@@ -574,6 +577,7 @@ describe('Controller', () => {
                      clusters: {},
                      deviceIeeeAddress: '0x123',
                      deviceNetworkAddress: 123,
+                     defaultSendWhenActive: false,
                      _binds: [],
                      _configuredReportings: [] } ],
                 _ieeeAddr: '0x123',
@@ -728,27 +732,26 @@ describe('Controller', () => {
         expect(events.message.length).toBe(0);
     });
 
+    it('Device should update properties when reported', async () => {
+        await controller.start();
+        await mockAdapterEvents['deviceJoined']({networkAddress: 129, ieeeAddr: '0x129'});
+        expect(Device.byIeeeAddr('0x129').modelID).toBe('myModelID');
+        await mockAdapterEvents['zclData']({
+            wasBroadcast: false,
+            address: 129,
+            frame: mockZclFrame.create(0, 1, true, null, 10, 'readRsp', 0, [{attrId: 5, status: 0, dataType: 66, attrData: 'new.model.id'}]),
+            endpoint: 1,
+            linkquality: 50,
+            groupID: 1,
+        });
+
+        expect(Device.byIeeeAddr('0x129').modelID).toBe('new.model.id');
+    });
+
     it('Set transmit power', async () => {
         await controller.start();
         await controller.setTransmitPower(15);
         expect(mockAdapterSetTransmitPower).toHaveBeenCalledWith(15);
-    });
-
-    it('Disable led', async () => {
-        await controller.start();
-        mockAdapterSetLED.mockClear();
-        await controller.setLED(false);
-        expect(mockAdapterSetLED).toBeCalledTimes(1);
-    });
-
-    it('Throw error when not supports LED', async () => {
-        await controller.start();
-        mockAdapterSupportsLED.mockReturnValueOnce(false);
-        expect(await controller.supportsLED()).toBeFalsy();
-        mockAdapterSupportsLED.mockReturnValueOnce(false);
-        let error;
-        try {await controller.setLED(false)} catch (e) {error = e;}
-        expect(error).toStrictEqual(new Error(`Adapter doesn't support LED`));
     });
 
     it('Get coordinator version', async () => {
@@ -769,7 +772,7 @@ describe('Controller', () => {
         await mockAdapterEvents['deviceJoined']({networkAddress: 129, ieeeAddr: '0x129'});
         expect(equalsPartial(events.deviceJoined[0].device, {ID: 2, networkAddress: 129, ieeeAddr: '0x129'})).toBeTruthy();
         expect(events.deviceInterview[0]).toStrictEqual({"device":{"meta": {}, "_skipDefaultResponse": false, "_skipTimeResponse": false, "_lastSeen": deepClone(Date.now()), "ID":2,"_endpoints":[],"_type":"Unknown","_ieeeAddr":"0x129","_interviewCompleted":false,"_interviewing":false,"_networkAddress":129,"useImplicitCheckin":true},"status":"started"});
-        const device = {"ID":2,"_skipDefaultResponse": false,"_skipTimeResponse":false,"_lastSeen": deepClone(Date.now()),"_type":"Unknown","_ieeeAddr":"0x129","_networkAddress":129,"meta": {},"_endpoints":[{"clusters": {}, "ID":1,"inputClusters":[0,1],"outputClusters":[2],"pendingRequests": [],"deviceNetworkAddress":129,"deviceIeeeAddress":"0x129","_binds": [], "_configuredReportings": [],"meta":{},"deviceID":5,"profileID":99}],"_type":"Router","_manufacturerID":1212,"_manufacturerName":"KoenAndCo","_powerSource":"Mains (single phase)","_modelID":"myModelID","_applicationVersion":2,"_stackVersion":101,"_zclVersion":1,"_hardwareVersion":3,"_dateCode":"201901","_softwareBuildID":"1.01","_interviewCompleted":true,"_interviewing":false,"useImplicitCheckin":true};
+        const device = {"ID":2,"_skipDefaultResponse": false,"_skipTimeResponse":false,"_lastSeen": deepClone(Date.now()),"_type":"Unknown","_ieeeAddr":"0x129","_networkAddress":129,"meta": {},"_endpoints":[{"clusters": {}, "ID":1,"inputClusters":[0,1],"outputClusters":[2],"pendingRequests": [],"deviceNetworkAddress":129,"deviceIeeeAddress":"0x129","_binds": [], "_configuredReportings": [],"meta":{},"deviceID":5,"profileID":99,"defaultSendWhenActive":false}],"_type":"Router","_manufacturerID":1212,"_manufacturerName":"KoenAndCo","_powerSource":"Mains (single phase)","_modelID":"myModelID","_applicationVersion":2,"_stackVersion":101,"_zclVersion":1,"_hardwareVersion":3,"_dateCode":"201901","_softwareBuildID":"1.01","_interviewCompleted":true,"_interviewing":false,"useImplicitCheckin":true};
         expect(events.deviceInterview[1]).toStrictEqual({"status":"successful","device":device});
         expect(deepClone(controller.getDeviceByNetworkAddress(129))).toStrictEqual(device);
         expect(events.deviceInterview.length).toBe(2);
@@ -787,7 +790,7 @@ describe('Controller', () => {
         await mockAdapterEvents['deviceJoined']({networkAddress: 129, ieeeAddr: '0x129'});
         expect(equalsPartial(events.deviceJoined[0].device, {ID: 2, networkAddress: 129, ieeeAddr: '0x129'})).toBeTruthy();
         expect(events.deviceInterview[0]).toStrictEqual({"device":{"meta": {}, "_skipDefaultResponse": false,"_skipTimeResponse":false,"_lastSeen": deepClone(Date.now()), "ID":2,"_endpoints":[],"_ieeeAddr":"0x129","_interviewCompleted":false,"_interviewing":false,"_networkAddress":129,"_type":"Unknown","useImplicitCheckin":true},"status":"started"});
-        const device = {"ID":2,"_skipDefaultResponse": false,"_skipTimeResponse":false,"_lastSeen": deepClone(Date.now()),"_type":"Unknown","_ieeeAddr":"0x129","_networkAddress":129,"meta": {},"_endpoints":[{"clusters": {}, "ID":1,"inputClusters":[0,1],"meta":{},"outputClusters":[2],"pendingRequests": [],"deviceNetworkAddress":129,"deviceIeeeAddress":"0x129","_binds": [], "_configuredReportings": [],"deviceID":5,"profileID":99}],"_type":"Router","_manufacturerID":1212,"_manufacturerName":"KoenAndCo","_powerSource":"Mains (single phase)","_modelID":"myModelID","_applicationVersion":2,"_stackVersion":101,"_zclVersion":1,"_hardwareVersion":3,"_dateCode":"201901","_softwareBuildID":"1.01","_interviewCompleted":true,"_interviewing":false,"useImplicitCheckin":true};
+        const device = {"ID":2,"_skipDefaultResponse": false,"_skipTimeResponse":false,"_lastSeen": deepClone(Date.now()),"_type":"Unknown","_ieeeAddr":"0x129","_networkAddress":129,"meta": {},"_endpoints":[{"clusters": {}, "ID":1,"inputClusters":[0,1],"meta":{},"outputClusters":[2],"pendingRequests": [],"deviceNetworkAddress":129,"deviceIeeeAddress":"0x129","_binds": [], "_configuredReportings": [],"deviceID":5,"profileID":99,"defaultSendWhenActive":false}],"_type":"Router","_manufacturerID":1212,"_manufacturerName":"KoenAndCo","_powerSource":"Mains (single phase)","_modelID":"myModelID","_applicationVersion":2,"_stackVersion":101,"_zclVersion":1,"_hardwareVersion":3,"_dateCode":"201901","_softwareBuildID":"1.01","_interviewCompleted":true,"_interviewing":false,"useImplicitCheckin":true};
         expect(events.deviceInterview[1]).toStrictEqual({"status":"successful","device":device});
         expect(deepClone(controller.getDeviceByIeeeAddr('0x129'))).toStrictEqual(device);
         expect(events.deviceInterview.length).toBe(2);
@@ -936,8 +939,6 @@ describe('Controller', () => {
         expect(events.permitJoinChanged.length).toBe(1);
         expect(events.permitJoinChanged[0]).toStrictEqual({permitted: true, reason: 'manual', timeout: undefined});
         expect(controller.getPermitJoin()).toBe(true);
-        expect(mockAdapterSetLED).toBeCalledTimes(1);
-        expect(mockAdapterSetLED).toHaveBeenCalledWith(true);
 
         // Green power
         expect(mocksendZclFrameToAll).toHaveBeenCalledTimes(1);
@@ -969,8 +970,6 @@ describe('Controller', () => {
         expect(events.permitJoinChanged.length).toBe(2);
         expect(events.permitJoinChanged[1]).toStrictEqual({permitted: false, reason: 'manual', timeout: undefined});
         expect(controller.getPermitJoin()).toBe(false);
-        expect(mockAdapterSetLED).toBeCalledTimes(2);
-        expect(mockAdapterSetLED).toHaveBeenCalledWith(false);
 
         // Green power
         expect(mocksendZclFrameToAll).toHaveBeenCalledTimes(4);
@@ -996,17 +995,14 @@ describe('Controller', () => {
     });
 
     it('Controller permit joining for specific time', async () => {
-        mockAdapterSupportsLED.mockReturnValueOnce(false);
         await controller.start();
         await controller.permitJoin(true, null, 10);
         expect(mockAdapterPermitJoin).toBeCalledTimes(1);
         expect(mockAdapterPermitJoin.mock.calls[0][0]).toBe(254);
         expect(events.permitJoinChanged.length).toBe(1);
         expect(events.permitJoinChanged[0]).toStrictEqual({permitted: true, reason: 'manual', timeout: 10});
-        expect(mockAdapterSetLED).toHaveBeenCalledTimes(0);
 
         // Timer ends
-        mockAdapterSupportsLED.mockReturnValueOnce(false);
         jest.advanceTimersByTime(5 * 1000);
         await flushPromises();
         expect(controller.getPermitJoinTimeout()).toBe(5);
@@ -1017,7 +1013,6 @@ describe('Controller', () => {
         expect(events.permitJoinChanged.length).toBe(11);
         expect(events.permitJoinChanged[5]).toStrictEqual({permitted: true, reason: 'manual', timeout: 5});
         expect(events.permitJoinChanged[10]).toStrictEqual({permitted: false, reason: 'timer_expired', timeout: undefined});
-        expect(mockAdapterSetLED).toHaveBeenCalledTimes(0);
     });
 
     it('Shouldnt create backup when adapter doesnt support it', async () => {
@@ -1194,6 +1189,7 @@ describe('Controller', () => {
                     "deviceIeeeAddress":"0x129",
                     "deviceID":5,
                     "profileID":99,
+                    "defaultSendWhenActive": false,
                     "clusters": {
                         "msOccupancySensing": {
                             "attributes": {
@@ -1231,6 +1227,7 @@ describe('Controller', () => {
                 "_configuredReportings": [],
                 "profileID": 99,
                 "meta":{},
+                "defaultSendWhenActive": false,
                 "clusters": {
                     "msOccupancySensing": {
                         "attributes": {
@@ -1305,7 +1302,8 @@ describe('Controller', () => {
                     "_configuredReportings": [],
                     "meta":{},
                     "deviceID":5,
-                    "profileID":99
+                    "profileID":99,
+                    "defaultSendWhenActive": false,
                     }
                 ],
                 "_type":"Router",
@@ -1337,6 +1335,7 @@ describe('Controller', () => {
                 "_configuredReportings": [],
                 "profileID": 99,
                 "meta":{},
+                "defaultSendWhenActive": false,
             },
             "data": {
                 data: [0, 1, 2, 3],
@@ -1393,7 +1392,8 @@ describe('Controller', () => {
                     "_configuredReportings": [],
                     "meta":{},
                     "deviceID":5,
-                    "profileID":99
+                    "profileID":99,
+                    "defaultSendWhenActive": false,
                     }
                 ],
                 "_type":"Router",
@@ -1425,6 +1425,7 @@ describe('Controller', () => {
                 "_configuredReportings": [],
                 "profileID": 99,
                 "meta":{},
+                "defaultSendWhenActive": false,
             },
             "data": {
                 data: [0, 1, 2, 3],
@@ -1495,6 +1496,7 @@ describe('Controller', () => {
                      "deviceID":5,
                      "profileID":99,
                      "meta":{},
+                     "defaultSendWhenActive": false,
                   },
                   {
                      "ID":3,
@@ -1517,6 +1519,7 @@ describe('Controller', () => {
                      "_binds": [],
                      "_configuredReportings": [],
                      "meta":{},
+                     "defaultSendWhenActive": false,
                   }
                ],
                "_type":"Router",
@@ -1525,7 +1528,7 @@ describe('Controller', () => {
                "meta": {},
                "_powerSource":"Mains (single phase)",
                "_modelID":"myModelID",
-               "_applicationVersion":2,
+               "_applicationVersion":3,
                "_stackVersion":101,
                "_zclVersion":1,
                "_hardwareVersion":3,
@@ -1549,6 +1552,7 @@ describe('Controller', () => {
                "deviceIeeeAddress":"0x129",
                "_binds": [],
                "_configuredReportings": [],
+               "defaultSendWhenActive": false,
                "clusters": {
                   "genBasic": {
                     "attributes": {
@@ -1619,7 +1623,8 @@ describe('Controller', () => {
                      "_configuredReportings": [],
                      "meta":{},
                      "deviceID":5,
-                     "profileID":99
+                     "profileID":99,
+                     "defaultSendWhenActive": false,
                   }
                ],
                "_type":"Router",
@@ -1656,6 +1661,7 @@ describe('Controller', () => {
                "deviceID":5,
                "profileID":99,
                "meta":{},
+               "defaultSendWhenActive": false,
             },
             "data":{
                "value":256,
@@ -1840,7 +1846,7 @@ describe('Controller', () => {
         await mockAdapterEvents['zclData']({
             wasBroadcast: false,
             address: 129,
-            frame: ZclFrame.create(0, 0, true, null, 40, 0, 513, [{attrId: 28}]),
+            frame: ZclFrame.create(0, 0, true, null, 40, 0, 513, [{attrId: 28}, {attrId: 2901238}]),
             endpoint: 1,
             linkquality: 19,
             groupID: 10,
@@ -1966,6 +1972,7 @@ describe('Controller', () => {
                       "_binds": [],
                       "_configuredReportings": [],
                       "meta":{},
+                      "defaultSendWhenActive": false,
                    }
                 ],
                 "_type":"EndDevice",
@@ -2020,6 +2027,7 @@ describe('Controller', () => {
                       "_binds": [],
                       "_configuredReportings": [],
                       "meta": {},
+                      "defaultSendWhenActive": false,
                    }
                 ],
                 "_type":"EndDevice",
@@ -2097,7 +2105,8 @@ describe('Controller', () => {
                     "_configuredReportings": [],
                     "meta":{},
                     "deviceID":5,
-                    "profileID":99
+                    "profileID":99,
+                    "defaultSendWhenActive": false,
                     }
                 ],
                 "_type":"Router",
@@ -2105,7 +2114,7 @@ describe('Controller', () => {
                 "_manufacturerName":"KoenAndCo",
                 "meta": {},
                 "_powerSource":"Mains (single phase)",
-                "_modelID":"myModelID",
+                "_modelID":"lumi.sensor_wleak.aq1",
                 "_applicationVersion":2,
                 "_stackVersion":101,
                 "_zclVersion":1,
@@ -2128,6 +2137,7 @@ describe('Controller', () => {
                 "_configuredReportings": [],
                 "profileID": 99,
                 "meta":{},
+                "defaultSendWhenActive": false,
                 "clusters": {
                     "genBasic": {
                         "attributes": {
@@ -2321,29 +2331,76 @@ describe('Controller', () => {
         expect(call[7]).toBe(null);
     });
 
-    it('Configure poll control', async () => {
+    it('Poll control supported', async () => {
         await controller.start();
-        await mockAdapterEvents['deviceJoined']({networkAddress: 129, ieeeAddr: '0x129'});
-        await mockAdapterEvents['deviceJoined']({networkAddress: 170, ieeeAddr: '0x170'});
-        const device = controller.getDeviceByIeeeAddr('0x129');
-        const target = controller.getDeviceByIeeeAddr('0x170').getEndpoint(1);
+        await mockAdapterEvents['deviceJoined']({networkAddress: 174, ieeeAddr: '0x174'});
+        const device = controller.getDeviceByIeeeAddr('0x174');
+        await device.interview();
         const endpoint = device.getEndpoint(1);
-        await device.configurePollControl(target, true);
+        const coordinator = Device.byType('Coordinator')[0];
+        const target = coordinator.getEndpoint(1);
         expect(deepClone(endpoint.binds)).toStrictEqual(deepClone([{cluster: Zcl.Utils.getCluster('genPollCtrl'), target}]));
         expect(device.useImplicitCheckin).toEqual(false);
 
+        mocksendZclFrameToEndpoint.mockClear();
         await mockAdapterEvents['zclData']({
             wasBroadcast: false,
-            address: 129,
+            address: 174,
             frame: ZclFrame.create(Zcl.FrameType.SPECIFIC, Zcl.Direction.SERVER_TO_CLIENT, true, 1, 1, 'checkin', Zcl.Utils.getCluster("genPollCtrl").ID, {}, 0),
             endpoint: 1,
             linkquality: 52,
             groupID: undefined,
         });
+        const call = mocksendZclFrameToEndpoint.mock.calls[0];
+        expect(call[0]).toBe('0x174');
+        expect(call[1]).toBe(174);
+        expect(call[2]).toBe(1);
+        expect(call[3].Cluster.name).toBe('genPollCtrl');
+        expect(call[3].Command.name).toBe('checkinRsp');
+        expect(call[3].Payload).toStrictEqual({startFastPolling: false, fastPollTimeout: 0});
+    });
 
-        await device.configurePollControl(target, false);
-        expect(deepClone(endpoint.binds)).toStrictEqual(deepClone([]));
+    it('Poll control unsupported', async () => {
+        await controller.start();
+        await mockAdapterEvents['deviceJoined']({networkAddress: 129, ieeeAddr: '0x129'});
+        const device = controller.getDeviceByIeeeAddr('0x129');
+        await device.interview();
+        const endpoint = device.getEndpoint(1);
+        const coordinator = Device.byType('Coordinator')[0];
+        const target = coordinator.getEndpoint(1);
+        expect(deepClone(endpoint.binds)).toStrictEqual([]);
         expect(device.useImplicitCheckin).toEqual(true);
+    });
+
+    it('Default sendWhenActive after poll control', async () => {
+        await controller.start();
+        await mockAdapterEvents['deviceJoined']({networkAddress: 174, ieeeAddr: '0x174'});
+        const device = controller.getDeviceByIeeeAddr('0x174');
+        const endpoint = device.getEndpoint(1);
+        await device.interview();
+        expect(device.defaultSendWhenActive).toEqual(true);
+        expect(endpoint.defaultSendWhenActive).toEqual(true);
+    });
+
+    it('Default sendWhenActive without poll control', async () => {
+        await controller.start();
+        await mockAdapterEvents['deviceJoined']({networkAddress: 129, ieeeAddr: '0x129'});
+        const device = controller.getDeviceByIeeeAddr('0x129');
+        const endpoint = device.getEndpoint(1);
+        await device.interview();
+        expect(device.defaultSendWhenActive).toEqual(undefined);
+        expect(endpoint.defaultSendWhenActive).toEqual(false);
+    });
+
+    it('Default sendWhenActive respect setting', async () => {
+        await controller.start();
+        await mockAdapterEvents['deviceJoined']({networkAddress: 174, ieeeAddr: '0x174'});
+        const device = controller.getDeviceByIeeeAddr('0x174');
+        const endpoint = device.getEndpoint(1);
+        device.defaultSendWhenActive = false;
+        await device.interview();
+        expect(device.defaultSendWhenActive).toEqual(false);
+        expect(endpoint.defaultSendWhenActive).toEqual(false);
     });
 
     it('Endpoint get id', async () => {
@@ -3203,6 +3260,7 @@ describe('Controller', () => {
                         "deviceNetworkAddress":129,
                         "_binds":[], "_configuredReportings": [],
                         "meta":{},
+                        "defaultSendWhenActive": false,
                     }
                 ],
                 "_hardwareVersion":3,
@@ -3246,6 +3304,7 @@ describe('Controller', () => {
                 "deviceNetworkAddress":129,
                 "_binds":[], "_configuredReportings": [],
                 "meta":{},
+                "defaultSendWhenActive": false,
             },
             "data":[
                 "mainsVoltage",
@@ -3311,6 +3370,7 @@ describe('Controller', () => {
                         "deviceNetworkAddress":129,
                         "_binds":[],
                         "_configuredReportings": [],
+                        "defaultSendWhenActive": false,
                     }
                 ],
                 "_hardwareVersion":3,
@@ -3355,6 +3415,7 @@ describe('Controller', () => {
                 "_binds":[],
                 "_configuredReportings": [],
                 "meta":{},
+                "defaultSendWhenActive": false,
             },
             "data":{
                 "16389": 3,
@@ -3619,7 +3680,7 @@ describe('Controller', () => {
         });
 
         expect(events.deviceJoined.length).toBe(1);
-        expect(deepClone(events.deviceJoined[0])).toStrictEqual({"device":{"ID":2,"_skipDefaultResponse": false,"_skipTimeResponse":false,"_endpoints":[{"inputClusters":[],"outputClusters":[],"pendingRequests":[],"ID":242,"clusters":{},"deviceIeeeAddress":"0x000000000046f4fe","deviceNetworkAddress":4650238,"_binds":[], "_configuredReportings": [],"meta":{}}],"_ieeeAddr":"0x000000000046f4fe","_interviewCompleted":true,"_interviewing":false,"_lastSeen":150,"_linkquality":50,"_manufacturerID":null,"_modelID":"GreenPower_2","_networkAddress":4650238,"_type":"GreenPower","meta":{},"useImplicitCheckin": true}});
+        expect(deepClone(events.deviceJoined[0])).toStrictEqual({"device":{"ID":2,"_skipDefaultResponse": false,"_skipTimeResponse":false,"_endpoints":[{"inputClusters":[],"outputClusters":[],"pendingRequests":[],"ID":242,"clusters":{},"deviceIeeeAddress":"0x000000000046f4fe","deviceNetworkAddress":4650238,"_binds":[], "_configuredReportings": [],"meta":{},"defaultSendWhenActive":false}],"_ieeeAddr":"0x000000000046f4fe","_interviewCompleted":true,"_interviewing":false,"_lastSeen":150,"_linkquality":50,"_manufacturerID":null,"_modelID":"GreenPower_2","_networkAddress":4650238,"_type":"GreenPower","meta":{},"useImplicitCheckin": true}});
         expect(events.deviceInterview.length).toBe(1);
         expect(deepClone(events.deviceInterview[0])).toStrictEqual({"status":"successful","device":{"ID":2,"_skipDefaultResponse": false,"_skipTimeResponse":false,"_endpoints":[],"_ieeeAddr":"0x000000000046f4fe","_interviewCompleted":true,"_interviewing":false,"_lastSeen":null,"_manufacturerID":null,"_modelID":"GreenPower_2","_networkAddress":4650238,"_type":"GreenPower","meta":{}, "useImplicitCheckin":true}});
         expect((controller.getDeviceByIeeeAddr('0x000000000046f4fe')).networkAddress).toBe(0x46f4fe);
@@ -3648,7 +3709,7 @@ describe('Controller', () => {
         });
 
         expect(events.message.length).toBe(1);
-        const expected = {"type":"commandNotification","device":{"ID":2,"_endpoints":[{"inputClusters":[],"meta":{},"outputClusters":[],"pendingRequests":[],"ID":242,"clusters":{},"deviceIeeeAddress":"0x000000000046f4fe","deviceNetworkAddress":4650238,"_binds":[], "_configuredReportings": []}],"_ieeeAddr":"0x000000000046f4fe","_interviewCompleted":true,"_interviewing":false,"_lastSeen":150,"_linkquality": 50,"_manufacturerID":null,"_skipDefaultResponse": false,"_skipTimeResponse":false,"_modelID":"GreenPower_2","_networkAddress":4650238,"_type":"GreenPower","meta":{},"useImplicitCheckin":true},"endpoint":{"inputClusters":[],"meta":{},"outputClusters":[],"pendingRequests":[],"ID":242,"clusters":{},"deviceIeeeAddress":"0x000000000046f4fe","deviceNetworkAddress":4650238,"_binds":[], "_configuredReportings": []},"data":{"options":0,"srcID":4650238,"frameCounter":228,"commandID":34,"payloadSize":255,"commandFrame":{}},"linkquality":50,"groupID":1,"cluster":"greenPower","meta":{"zclTransactionSequenceNumber":10,"manufacturerCode":null,"frameControl":{"reservedBits":0,"frameType":1,"direction":0,"disableDefaultResponse":true,"manufacturerSpecific":false}}};
+        const expected = {"type":"commandNotification","device":{"ID":2,"_endpoints":[{"inputClusters":[],"meta":{},"outputClusters":[],"pendingRequests":[],"ID":242,"clusters":{},"deviceIeeeAddress":"0x000000000046f4fe","deviceNetworkAddress":4650238,"_binds":[], "_configuredReportings": [],"defaultSendWhenActive":false}],"_ieeeAddr":"0x000000000046f4fe","_interviewCompleted":true,"_interviewing":false,"_lastSeen":150,"_linkquality": 50,"_manufacturerID":null,"_skipDefaultResponse": false,"_skipTimeResponse":false,"_modelID":"GreenPower_2","_networkAddress":4650238,"_type":"GreenPower","meta":{},"useImplicitCheckin":true},"endpoint":{"inputClusters":[],"meta":{},"outputClusters":[],"pendingRequests":[],"ID":242,"clusters":{},"deviceIeeeAddress":"0x000000000046f4fe","deviceNetworkAddress":4650238,"_binds":[], "_configuredReportings": [],"defaultSendWhenActive":false},"data":{"options":0,"srcID":4650238,"frameCounter":228,"commandID":34,"payloadSize":255,"commandFrame":{}},"linkquality":50,"groupID":1,"cluster":"greenPower","meta":{"zclTransactionSequenceNumber":10,"manufacturerCode":null,"frameControl":{"reservedBits":0,"frameType":1,"direction":0,"disableDefaultResponse":true,"manufacturerSpecific":false}}};
         expect(deepClone(events.message[0])).toStrictEqual(expected);
     });
 
@@ -3657,7 +3718,7 @@ describe('Controller', () => {
         await mockAdapterEvents['deviceJoined']({networkAddress: 172, ieeeAddr: '0x172'});
         const device = controller.getDeviceByIeeeAddr('0x172');
         const endpoint = device.getEndpoint(11);
-        expect(endpoint.getInputClusters().map(c => c.name)).toStrictEqual(['genBasic', 'genIdentify', 'genGroups', 'genScenes', 'genOnOff', 'genLevelCtrl', 'lightingColorCtrl']);
+        expect(endpoint.getInputClusters().map(c => c.name)).toStrictEqual(['genBasic', 'genIdentify', 'genGroups', 'genScenes', 'genOnOff', 'genLevelCtrl', 'lightingColorCtrl', '912301']);
         expect(endpoint.getOutputClusters().map(c => c.name)).toStrictEqual(['genDeviceTempCfg']);
     });
 
@@ -3793,12 +3854,11 @@ describe('Controller', () => {
 
     it('Explicit check-in', async () => {
         await controller.start();
+        await mockAdapterEvents['deviceJoined']({networkAddress: 174, ieeeAddr: '0x174'});
         await mockAdapterEvents['deviceJoined']({networkAddress: 129, ieeeAddr: '0x129'});
-        await mockAdapterEvents['deviceJoined']({networkAddress: 170, ieeeAddr: '0x170'});
-        const device = controller.getDeviceByIeeeAddr('0x129');
-        const target = controller.getDeviceByIeeeAddr('0x170');
-
-        await device.configurePollControl(target, true);
+        const device = controller.getDeviceByIeeeAddr('0x174');
+        const target = controller.getDeviceByIeeeAddr('0x129');
+        await device.interview();
 
         const endpoint = device.getEndpoint(1);
         endpoint.pendingRequests.push({resolve: () => {}, reject: () => {}, func: async () => {}});
@@ -3809,7 +3869,7 @@ describe('Controller', () => {
 
         await mockAdapterEvents['zclData']({
             wasBroadcast: false,
-            address: '0x129',
+            address: 174,
             frame: ZclFrame.fromBuffer(Zcl.Utils.getCluster("msOccupancySensing").ID, Buffer.from([24,169,10,0,0,24,1])),
             endpoint: 1,
             linkquality: 50,
@@ -3820,7 +3880,7 @@ describe('Controller', () => {
 
         await mockAdapterEvents['zclData']({
             wasBroadcast: false,
-            address: 129,
+            address: 174,
             frame: ZclFrame.create(Zcl.FrameType.SPECIFIC, Zcl.Direction.SERVER_TO_CLIENT, true, 1, 1, 'checkin', Zcl.Utils.getCluster("genPollCtrl").ID, {}, 0),
             endpoint: 1,
             linkquality: 52,
@@ -3828,7 +3888,32 @@ describe('Controller', () => {
         });
 
         expect(mocksendZclFrameToEndpoint).toHaveBeenCalledTimes(1);
+
+        const checkinrsp = mocksendZclFrameToEndpoint.mock.calls[0];
+        expect(checkinrsp[0]).toBe('0x174');
+        expect(checkinrsp[1]).toBe(174);
+        expect(checkinrsp[2]).toBe(1);
+        expect(checkinrsp[3].Cluster.name).toBe('genPollCtrl');
+        expect(checkinrsp[3].Command.name).toBe('checkinRsp');
+        expect(checkinrsp[3].Payload).toStrictEqual({startFastPolling: true, fastPollTimeout: 0});
+
         expect((await result)).toBe(undefined);
+
+        const cmd = mocksendZclFrameToEndpoint.mock.calls[1];
+        expect(cmd[0]).toBe('0x174');
+        expect(cmd[1]).toBe(174);
+        expect(cmd[2]).toBe(1);
+        expect(cmd[3].Cluster.name).toBe('genOnOff');
+
+        const fastpollstop = mocksendZclFrameToEndpoint.mock.calls[2];
+        expect(fastpollstop[0]).toBe('0x174');
+        expect(fastpollstop[1]).toBe(174);
+        expect(fastpollstop[2]).toBe(1);
+        expect(fastpollstop[3].Cluster.name).toBe('genPollCtrl');
+        expect(fastpollstop[3].Command.name).toBe('fastPollStop');
+        expect(fastpollstop[3].Payload).toStrictEqual({});
+
+        expect(mocksendZclFrameToEndpoint).toHaveBeenCalledTimes(3);
     });
 
 });
