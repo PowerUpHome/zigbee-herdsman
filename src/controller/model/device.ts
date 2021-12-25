@@ -6,6 +6,7 @@ import {Wait} from '../../utils';
 import Debug from "debug";
 import * as Zcl from '../../zcl';
 import assert from 'assert';
+import {ZclFrameConverter} from '../helpers';
 
 /**
  * @ignore
@@ -51,6 +52,7 @@ class Device extends Entity {
     private _skipDefaultResponse: boolean;
     private _skipTimeResponse: boolean;
     private _deleted: boolean;
+    private _defaultSendWhenActive?: boolean;
 
     // Getters/setters
     get ieeeAddr(): string {return this._ieeeAddr;}
@@ -82,7 +84,7 @@ class Device extends Entity {
     }
     get powerSource(): string {return this._powerSource;}
     set powerSource(powerSource: string) {
-        this._powerSource = typeof powerSource === 'number' ? Zcl.PowerSource[powerSource] : powerSource;
+        this._powerSource = typeof powerSource === 'number' ? Zcl.PowerSource[powerSource & ~(1 << 7)] : powerSource;
     }
     get softwareBuildID(): string {return this._softwareBuildID;}
     set softwareBuildID(softwareBuildID: string) {this._softwareBuildID = softwareBuildID;}
@@ -96,6 +98,13 @@ class Device extends Entity {
     set skipDefaultResponse(skipDefaultResponse: boolean) {this._skipDefaultResponse = skipDefaultResponse;}
     get skipTimeResponse(): boolean {return this._skipTimeResponse;}
     set skipTimeResponse(skipTimeResponse: boolean) {this._skipTimeResponse = skipTimeResponse;}
+    get defaultSendWhenActive(): boolean {return this._defaultSendWhenActive;}
+    set defaultSendWhenActive(defaultSendWhenActive: boolean) {
+        this._defaultSendWhenActive = defaultSendWhenActive;
+        for (const endpoint of this._endpoints) {
+            endpoint.defaultSendWhenActive = defaultSendWhenActive;
+        }
+    }
 
     public meta: KeyValue;
     private useImplicitCheckin: boolean;
@@ -125,7 +134,7 @@ class Device extends Entity {
         manufacturerID: number, endpoints: Endpoint[], manufacturerName: string,
         powerSource: string, modelID: string, applicationVersion: number, stackVersion: number, zclVersion: number,
         hardwareVersion: number, dateCode: string, softwareBuildID: string, interviewCompleted: boolean, meta: KeyValue,
-        lastSeen: number, useImplicitCheckin: boolean,
+        lastSeen: number, useImplicitCheckin: boolean, defaultSendWhenActive?: boolean,
     ) {
         super();
         this.ID = ID;
@@ -149,6 +158,7 @@ class Device extends Entity {
         this._skipTimeResponse = false;
         this.meta = meta;
         this._lastSeen = lastSeen;
+        this._defaultSendWhenActive = defaultSendWhenActive;
         this.useImplicitCheckin = useImplicitCheckin;
     }
 
@@ -157,7 +167,8 @@ class Device extends Entity {
             throw new Error(`Device '${this.ieeeAddr}' already has an endpoint '${ID}'`);
         }
 
-        const endpoint = Endpoint.create(ID, undefined, undefined, [], [], this.networkAddress, this.ieeeAddr);
+        const endpoint = Endpoint.create(ID, undefined, undefined, [], [], this.networkAddress, this.ieeeAddr,
+            this.defaultSendWhenActive || false);
         this.endpoints.push(endpoint);
         this.save();
         return endpoint;
@@ -195,19 +206,16 @@ class Device extends Entity {
         return this.endpoints.find(e => e.hasPendingRequests()) !== undefined;
     }
 
-    public async configurePollControl(coordinatorEndpoint: Endpoint, enable: boolean): Promise<void> {
-        const endpoint = this.getEndpoint(1);
-        if (enable) {
-            await endpoint.bind('genPollCtrl', coordinatorEndpoint);
-        } else {
-            await endpoint.unbind('genPollCtrl', coordinatorEndpoint);
-        }
-        this.useImplicitCheckin = !enable;
-        this.save();
-    }
-
     public async onZclData(dataPayload: AdapterEvents.ZclDataPayload, endpoint: Endpoint): Promise<void> {
         const frame = dataPayload.frame;
+
+        // Update reportable properties
+        if (frame.isCluster('genBasic') && (frame.isCommand('readRsp') || frame.isCommand('report'))) {
+            for (const [key, value] of Object.entries(ZclFrameConverter.attributeKeyValue(frame))) {
+                Device.ReportablePropertiesMapping[key]?.set(value, this);
+                this.save();
+            }
+        }
 
         // Respond to enroll requests
         if (frame.isSpecific() && frame.isCluster('ssIasZone') && frame.isCommand('enrollReq')) {
@@ -232,9 +240,11 @@ class Device extends Entity {
             if (frame.Cluster.name in attributes && (frame.Cluster.name !== 'genTime' || !this._skipTimeResponse)) {
                 const response: KeyValue = {};
                 for (const entry of frame.Payload) {
-                    const name = frame.Cluster.getAttribute(entry.attrId).name;
-                    if (name in attributes[frame.Cluster.name].attributes) {
-                        response[name] = attributes[frame.Cluster.name].attributes[name];
+                    if (frame.Cluster.hasAttribute(entry.attrId)) {
+                        const name = frame.Cluster.getAttribute(entry.attrId).name;
+                        if (name in attributes[frame.Cluster.name].attributes) {
+                            response[name] = attributes[frame.Cluster.name].attributes[name];
+                        }
                     }
                 }
 
@@ -301,7 +311,7 @@ class Device extends Entity {
         const networkAddress = entry.nwkAddr;
         const ieeeAddr = entry.ieeeAddr;
         const endpoints = Object.values(entry.endpoints).map((e): Endpoint => {
-            return Endpoint.fromDatabaseRecord(e, networkAddress, ieeeAddr);
+            return Endpoint.fromDatabaseRecord(e, networkAddress, ieeeAddr, entry.defaultSendWhenActive);
         });
 
         const meta = entry.meta ? entry.meta : {};
@@ -315,6 +325,7 @@ class Device extends Entity {
             entry.manufName, entry.powerSource, entry.modelId, entry.appVersion,
             entry.stackVersion, entry.zclVersion, entry.hwVersion, entry.dateCode, entry.swBuildId,
             entry.interviewCompleted, meta, entry.lastSeen || null, entry.useImplicitCheckin,
+            entry.defaultSendWhenActive,
         );
     }
 
@@ -332,6 +343,7 @@ class Device extends Entity {
             stackVersion: this.stackVersion, hwVersion: this.hardwareVersion, dateCode: this.dateCode,
             swBuildId: this.softwareBuildID, zclVersion: this.zclVersion, interviewCompleted: this.interviewCompleted,
             meta: this.meta, lastSeen: this.lastSeen, useImplicitCheckin: this.useImplicitCheckin,
+            defaultSendWhenActive: this.defaultSendWhenActive,
         };
     }
 
@@ -390,7 +402,7 @@ class Device extends Entity {
 
         const endpointsMapped = endpoints.map((e): Endpoint => {
             return Endpoint.create(
-                e.ID, e.profileID, e.deviceID, e.inputClusters, e.outputClusters, networkAddress, ieeeAddr
+                e.ID, e.profileID, e.deviceID, e.inputClusters, e.outputClusters, networkAddress, ieeeAddr, false
             );
         });
 
@@ -398,7 +410,7 @@ class Device extends Entity {
         const device = new Device(
             ID, type, ieeeAddr, networkAddress, manufacturerID, endpointsMapped, manufacturerName,
             powerSource, modelID, undefined, undefined, undefined, undefined, undefined, undefined,
-            interviewCompleted, {}, null, true
+            interviewCompleted, {}, null, true, undefined,
         );
 
         Entity.database.insert(device.toDatabaseEntry());
@@ -503,6 +515,11 @@ class Device extends Entity {
     }
 
     private async interviewInternal(): Promise<void> {
+        // Clear defaultSendWhenActive mode when running interview
+        for (const endpoint of this._endpoints) {
+            endpoint.defaultSendWhenActive = false;
+        }
+
         const nodeDescriptorQuery = async (): Promise<void> => {
             const nodeDescriptor = await Entity.adapter.nodeDescriptor(this.networkAddress);
             this._manufacturerID = nodeDescriptor.manufacturerCode;
@@ -550,7 +567,8 @@ class Device extends Entity {
             // https://github.com/Koenkk/zigbee2mqtt/issues/7553
             debug.log("Interview - Detected potential TuYa end device, reading modelID and manufacturerName...");
             try {
-                const endpoint = Endpoint.create(1, undefined, undefined, [], [], this.networkAddress, this.ieeeAddr);
+                const endpoint = Endpoint.create(1, undefined, undefined, [], [], this.networkAddress, this.ieeeAddr,
+                    false);
                 const result = await endpoint.read('genBasic', ['modelId', 'manufacturerName']);
                 Object.entries(result)
                     .forEach((entry) => Device.ReportablePropertiesMapping[entry[0]].set(entry[1], this));
@@ -582,11 +600,13 @@ class Device extends Entity {
         // This is not a valid endpoint number according to the ZCL, requesting a simple descriptor will result
         // into an error. Therefore we filter it, more info: https://github.com/Koenkk/zigbee-herdsman/issues/82
         activeEndpoints.endpoints.filter((e) => e !== 0 && !this.getEndpoint(e)).forEach((e) =>
-            this._endpoints.push(Endpoint.create(e, undefined, undefined, [], [], this.networkAddress, this.ieeeAddr)));
+            this._endpoints.push(Endpoint.create(e, undefined, undefined, [], [], this.networkAddress, this.ieeeAddr,
+                false)));
         this.save();
         debug.log(`Interview - got active endpoints for device '${this.ieeeAddr}'`);
 
-        for (const endpoint of this.endpoints) {
+        for (const endpointID of activeEndpoints.endpoints) {
+            const endpoint = this.getEndpoint(endpointID);
             const simpleDescriptor = await Entity.adapter.simpleDescriptor(this.networkAddress, endpoint.ID);
             endpoint.profileID = simpleDescriptor.profileID;
             endpoint.deviceID = simpleDescriptor.deviceID;
@@ -630,6 +650,8 @@ class Device extends Entity {
             }
         }
 
+        const coordinator = Device.byType('Coordinator')[0];
+
         // Enroll IAS device
         for (const endpoint of this.endpoints.filter((e): boolean => e.supportsInputCluster('ssIasZone'))) {
             debug.log(`Interview - IAS - enrolling '${this.ieeeAddr}' endpoint '${endpoint.ID}'`);
@@ -638,7 +660,6 @@ class Device extends Entity {
             debug.log(`Interview - IAS - before enrolling state: '${JSON.stringify(stateBefore)}'`);
 
             // Do not enroll when device has already been enrolled
-            const coordinator = Device.byType('Coordinator')[0];
             if (stateBefore.zoneState !== 1 || stateBefore.iasCieAddr !== coordinator.ieeeAddr) {
                 debug.log(`Interview - IAS - not enrolled, enrolling`);
 
@@ -678,6 +699,25 @@ class Device extends Entity {
                 debug.log(`Interview - IAS - already enrolled, skipping enroll`);
             }
         }
+
+        // Bind poll control
+        let bound = false;
+        for (const endpoint of this.endpoints.filter((e): boolean => e.supportsInputCluster('genPollCtrl'))) {
+            debug.log(`Interview - Poll control - binding '${this.ieeeAddr}' endpoint '${endpoint.ID}'`);
+            await endpoint.bind('genPollCtrl', coordinator.endpoints[0]);
+            bound = true;
+        }
+
+        if (bound) {
+            if (this.defaultSendWhenActive === undefined)
+                this.defaultSendWhenActive = true;
+            this.useImplicitCheckin = false;
+        }
+
+        // Reset defaultSendWhenActive mode when after interview
+        for (const endpoint of this._endpoints) {
+            endpoint.defaultSendWhenActive = this.defaultSendWhenActive || false;
+        }
     }
 
     public async removeFromNetwork(): Promise<void> {
@@ -697,6 +737,18 @@ class Device extends Entity {
         }
 
         this._deleted = true;
+
+        // Clear all data in case device joins again
+        this._interviewCompleted = false;
+        this._interviewing = false;
+        this.meta = {};
+        const newEndpoints: Endpoint[] = [];
+        for (const endpoint of this.endpoints) {
+            newEndpoints.push(Endpoint.create(endpoint.ID, endpoint.profileID, endpoint.deviceID, 
+                endpoint.inputClusters, endpoint.outputClusters, this.networkAddress, this.ieeeAddr, 
+                this.defaultSendWhenActive));
+        }
+        this._endpoints = newEndpoints;
     }
 
     public async lqi(): Promise<LQI> {

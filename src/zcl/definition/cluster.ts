@@ -579,6 +579,13 @@ const Cluster: {
                 parameters: [
                 ],
             },
+            moveToLevelTuya: {
+                ID: 240,
+                parameters: [
+                    {name: 'level', type: DataType.uint16},
+                    {name: 'transtime', type: DataType.uint16},
+                ],
+            },
         },
         commandsResponse: {
         },
@@ -1934,6 +1941,7 @@ const Cluster: {
             danfossMountedModeControl: {ID: 0x4013, type: DataType.boolean, manufacturerCode: ManufacturerCode.DANFOSS},
             danfossThermostatOrientation: {ID: 0x4014, type: DataType.boolean, manufacturerCode: ManufacturerCode.DANFOSS},
             danfossExternalMeasuredRoomSensor: {ID: 0x4015, type: DataType.int16, manufacturerCode: ManufacturerCode.DANFOSS},
+            danfossRadiatorCovered: {ID: 0x4016, type: DataType.boolean, manufacturerCode: ManufacturerCode.DANFOSS},
             danfossAlgorithmScaleFactor: {ID: 0x4020, type: DataType.uint8, manufacturerCode: ManufacturerCode.DANFOSS},
             danfossHeatAvailable: {ID: 0x4030, type: DataType.boolean, manufacturerCode: ManufacturerCode.DANFOSS},
             danfossHeatRequired: {ID: 0x4031, type: DataType.boolean, manufacturerCode: ManufacturerCode.DANFOSS},
@@ -2471,6 +2479,7 @@ const Cluster: {
             elkoOccupancyOperationMode: {ID: 0xE001, type: DataType.enum8, manufacturerCode: ManufacturerCode.ELKO},
             elkoForceOffTimeout: {ID: 0xE002, type: DataType.uint16, manufacturerCode: ManufacturerCode.ELKO},
             elkoOccupancySensitivity: {ID: 0xE003, type: DataType.uint8, manufacturerCode: ManufacturerCode.ELKO},
+            sprutOccupancyLevel: {ID: 0x6600, type: DataType.uint16, manufacturerCode: ManufacturerCode.SprutDevice},
         },
         commands: {
         },
@@ -3204,6 +3213,9 @@ const Cluster: {
             currentOutEnergyCarrierDemand: {ID: 27, type: DataType.int24},
             currentBlockPeriodConsumpReceived: {ID: 29, type: DataType.uint48},
             currentBlockReceived: {ID: 30, type: DataType.uint48},
+            DFTSummationReceived: {ID: 31, type: DataType.uint48},
+            activeRegisterTierDelivered: {ID: 32, type: DataType.enum8},
+            activeRegisterTierReceived: {ID: 33, type: DataType.enum8},
             currentTier1SummDelivered: {ID: 256, type: DataType.uint48},
             currentTier1SummReceived: {ID: 257, type: DataType.uint48},
             currentTier2SummDelivered: {ID: 258, type: DataType.uint48},
@@ -3826,6 +3838,23 @@ const Cluster: {
             },
         },
     },
+    manuSpecificIkeaAirPurifier: {
+        ID: 0xfc7d,
+        manufacturerCode: ManufacturerCode.IKEA_OF_SWEDEN,
+        attributes: {
+            filterRunTime: {ID: 0x0000, type: DataType.uint32},
+            replaceFilter: {ID: 0x0001, type: DataType.uint8},
+            filterLifeTime: {ID: 0x0002, type: DataType.uint32},
+            controlPanelLight: {ID: 0x0003, type: DataType.boolean},
+            particulateMatter25Measurement: {ID: 0x0004, type: DataType.uint16},
+            childLock: {ID: 0x0005, type: DataType.boolean},
+            fanMode: {ID: 0x0006, type: DataType.uint8},
+            fanSpeed: {ID: 0x0007, type: DataType.uint8},
+            deviceRunTime: {ID: 0x0008, type: DataType.uint32},
+        },
+        commands: {},
+        commandsResponse: {},
+    },
     manuSpecificClusterAduroSmart: {
         ID: 64716,
         attributes: {
@@ -3953,16 +3982,28 @@ const Cluster: {
         commands: {},
         commandsResponse: {}
     },
+    /**
+     * Tuya cluster
+     *
+     * Common parameters:
+     *
+     *  seq -  Sequence number of transmitted data, range 0-65535, revert to 0 after reaching 65535
+     *
+     * Official Tuya documentation: https://developer.tuya.com/en/docs/iot-device-dev/tuya-zigbee-universal-docking-access-standard?id=K9ik6zvofpzql#subtitle-6-Private%20cluster
+     *
+     */
     manuSpecificTuya: {
         ID: 0xEF00,  // 61184
         attributes: {
         },
         commands: {
-            setData: {
+            /**
+             * Gateway-side data request
+             */
+            dataRequest: {
                 ID: 0,
                 parameters: [
-                    {name: 'status', type: DataType.uint8},
-                    {name: 'transid', type: DataType.uint8},
+                    {name: 'seq', type: DataType.uint16},
                     {name: 'dp', type: DataType.uint8},
                     {name: 'datatype', type: DataType.uint8},
                     {name: 'length_hi', type: DataType.uint8},
@@ -3970,22 +4011,35 @@ const Cluster: {
                     {name: 'data', type: BuffaloZclDataType.LIST_UINT8},
                 ],
             },
-            resetDevice: {
+            /**
+             * GW send, trigger MCU side to report all current information, no zcl payload.
+             * Note: Device side can make a policy, data better not to report centrally
+             */
+            dataQuery: {
                 ID: 3,
                 parameters: [
                 ],
             },
-            unknown0x10: {
+            /**
+             * Gw->Zigbee gateway query MCU version
+             */
+            mcuVersionRequest: {
                 ID: 0x10,
                 parameters: [
-                    {name: 'data', type: BuffaloZclDataType.LIST_UINT8},
+                    {name: 'seq', type: DataType.uint16},
                 ],
             },
+
+            /**
+             * FIXME: This command is not listed in Tuya zigbee cluster description,
+             *  but there is some command 0x04 (description is: Command Issuance)
+             *  in `Serial command list` section of the same document
+             *  So, need to investigate more information about it
+             */
             sendData: {
                 ID: 4,
                 parameters: [
-                    {name: 'status', type: DataType.uint8},
-                    {name: 'transid', type: DataType.uint8},
+                    {name: 'seq', type: DataType.uint16},
                     {name: 'dp', type: DataType.uint8},
                     {name: 'datatype', type: DataType.uint8},
                     {name: 'length_hi', type: DataType.uint8},
@@ -3993,66 +4047,148 @@ const Cluster: {
                     {name: 'data', type: BuffaloZclDataType.LIST_UINT8},
                 ],
             },
-            // Time sync command (It's transparent beetween MCU and server)
-            // Time request device -> server
-            //   payloadSize = 0
-            // Set time, server -> device
-            //   payloadSize, should be always 8
-            //   payload[0-3] - UTC timestamp (big endian)
-            //   payload[4-7] - Local timestamp (big endian)
-            //
-            // Zigbee payload is very similar to the UART payload which is described here: https://developer.tuya.com/en/docs/iot/device-development/access-mode-mcu/zigbee-general-solution/tuya-zigbee-module-uart-communication-protocol/tuya-zigbee-module-uart-communication-protocol?id=K9ear5khsqoty#title-10-Time%20synchronization
-            //
-            // NOTE: You need to wait for time request before setting it. You can't set time without request.
-            setTime: {
+
+            /**
+             * Gw->Zigbee gateway notifies MCU of upgrade
+             */
+            mcuOtaNotify: {
+                ID: 0x12,
+                parameters: [
+                    {name: 'seq', type: DataType.uint16},
+                    // FIXME: key is fixed (8 byte) uint8 array
+                    //  Ask Koen is there any type to read fixed size uint_8t.
+                    //  currently there is `length` property in options but sems it is
+                    //  ignored in `writePayloadCluster()` and other methods.
+                    //  So, as workaround we use hi/low for key, which is not best solution
+                    {name: 'key_hi', type: DataType.uint32},
+                    {name: 'key_lo', type: DataType.uint32},
+                    {name: 'version', type: DataType.uint8},
+                    {name: 'imageSize', type: DataType.uint32},
+                    {name: 'crc', type: DataType.uint32},
+                ],
+            },
+
+            /**
+             * Gw->Zigbee gateway returns the requested upgrade package for MCU
+             */
+            mcuOtaBlockDataResponse: {
+                ID: 0x14,
+                parameters: [
+                    {name: 'seq', type: DataType.uint16},
+                    {name: 'status', type: DataType.uint8},
+                    {name: 'key_hi', type: DataType.uint32},
+                    {name: 'key_lo', type: DataType.uint32},
+                    {name: 'version', type: DataType.uint8},
+                    {name: 'offset', type: DataType.uint32},
+                    {name: 'imageData', type: BuffaloZclDataType.LIST_UINT8},
+                ],
+            },
+
+            /**
+             * Time synchronization (bidirectional)
+             */
+            mcuSyncTime: {
                 ID: 0x24,
                 parameters: [
-                    {name: 'payloadSize', type: DataType.uint16},
-                    {name: 'payload', type: BuffaloZclDataType.LIST_UINT8},
+                    {name: 'seq', type: DataType.uint16},
+                    {name: 'utc', type: DataType.uint32},
+                    {name: 'local', type: DataType.uint32},
                 ]
             }
         },
         commandsResponse: {
-            getData: {
+            /**
+             * Reply to MCU-side data request
+             */
+            dataResponse: {
                 ID: 1,
                 parameters: [
-                    {name: 'status', type: DataType.uint8},
-                    {name: 'transid', type: DataType.uint8},
+                    {name: 'seq', type: DataType.uint16},
                     {name: 'dp', type: DataType.uint8},
                     {name: 'datatype', type: DataType.uint8},
                     {name: 'fn', type: DataType.uint8},
                     {name: 'data', type: DataType.octetStr},
                 ],
             },
-            // The ZED will respond with the command 0x02 when a change was requested
-            // from the MCU. The payload of that response is exacly the same as used
-            // for the command 0x01.
-            setDataResponse: {
+            /**
+             * MCU-side data active upload (bidirectional)
+             */
+            dataReport: {
                 ID: 2,
                 parameters: [
-                    {name: 'status', type: DataType.uint8},
-                    {name: 'transid', type: DataType.uint8},
+                    {name: 'seq', type: DataType.uint16},
                     {name: 'dp', type: DataType.uint8},
                     {name: 'datatype', type: DataType.uint8},
                     {name: 'fn', type: DataType.uint8},
                     {name: 'data', type: DataType.octetStr},
                 ],
             },
+
+            /**
+             * FIXME: This command is not listed in Tuya zigbee cluster description,
+             *  but there is some command 0x06 (description is: Status query)
+             *  in `Serial command list` section of the same document
+             *  So, need to investigate more information about it
+             */
             activeStatusReport: {
                 ID: 6,
                 parameters: [
-                    {name: 'status', type: DataType.uint8},
-                    {name: 'transid', type: DataType.uint8},
+                    {name: 'seq', type: DataType.uint16},
                     {name: 'dp', type: DataType.uint8},
                     {name: 'datatype', type: DataType.uint8},
                     {name: 'fn', type: DataType.uint8},
                     {name: 'data', type: DataType.octetStr},
                 ],
             },
-            setTimeRequest: {
+            /**
+             * Zigbee->Gw MCU return version or actively report version
+             */
+            mcuVersionResponse: {
+                ID: 0x11,
+                parameters: [
+                    {name: 'seq', type: DataType.uint16},
+                    {name: 'version', type: DataType.uint8},
+                ],
+            },
+
+            /**
+             * Zigbee->Gw requests an upgrade package for the MCU
+             */
+            mcuOtaBlockDataRequest: {
+                ID: 0x13,
+                parameters: [
+                    {name: 'seq', type: DataType.uint16},
+                    {name: 'key_hi', type: DataType.uint32},
+                    {name: 'key_lo', type: DataType.uint32},
+                    {name: 'version', type: DataType.uint8},
+                    {name: 'offset', type: DataType.uint32},
+                    {name: 'size', type: DataType.uint32},
+                ],
+            },
+
+            /**
+             * Zigbee->Gw returns the upgrade result for the mcu
+             */
+            mcuOtaResult: {
+                ID: 0x15,
+                parameters: [
+                    {name: 'seq', type: DataType.uint16},
+                    {name: 'status', type: DataType.uint8},
+                    {name: 'key_hi', type: DataType.uint32},
+                    {name: 'key_lo', type: DataType.uint32},
+                    {name: 'version', type: DataType.uint8},
+                ],
+            },
+
+            /**
+             * Time synchronization (bidirectional)
+             */
+            mcuSyncTime: {
                 ID: 0x24,
                 parameters: [
-                    {name: 'payloadSize', type: DataType.uint16}
+                    {name: 'seq', type: DataType.uint16},
+                    {name: 'utc', type: DataType.uint32},
+                    {name: 'local', type: DataType.uint32},
                 ]
             }
         },
@@ -4066,6 +4202,52 @@ const Cluster: {
         },
         commands: {},
         commandsResponse: {}
+    },
+    liXeePrivate: {
+        ID: 0xFF66,
+        manufacturerCode: ManufacturerCode.JENNIC,
+        attributes: {
+            currentTarif: {ID: 0x0000, type: DataType.octetStr},
+            tomorrowColor: {ID: 0x0001, type: DataType.octetStr},
+            scheduleHPHC: {ID: 0x0002, type: DataType.uint8},
+            presencePotential: {ID: 0x0003, type: DataType.uint8},
+            startNoticeEJP: {ID: 0x0004, type: DataType.uint8},
+            warnDPS: {ID: 0x0005, type: DataType.uint16},
+            warnDIR1: {ID: 0x0006, type: DataType.uint16},
+            warnDIR2: {ID: 0x0007, type: DataType.uint16},
+            warnDIR3: {ID: 0x0008, type: DataType.uint16},
+            currentPrice: {ID: 0x0200, type: DataType.octetStr},
+            currentIndexTarif: {ID: 0x0201, type: DataType.uint8},
+            currentDate: {ID: 0x0202, type: DataType.octetStr},
+            activeEnerfyOutD01: {ID: 0x0203, type: DataType.uint32},
+            activeEnerfyOutD02: {ID: 0x0204, type: DataType.uint32},
+            activeEnerfyOutD03: {ID: 0x0205, type: DataType.uint32},
+            activeEnerfyOutD04: {ID: 0x0206, type: DataType.uint32},
+            injectedVA: {ID: 0x0207, type: DataType.uint16},
+            injectedVAMaxN: {ID: 0x0208, type: DataType.int16},
+            injectedVAMaxN1: {ID: 0x0209, type: DataType.int16},
+            injectedActiveLoadN: {ID: 0x0210, type: DataType.int16},
+            injectedActiveLoadN1: {ID: 0x0211, type: DataType.int16},
+            drawnVAMaxN1: {ID: 0x0212, type: DataType.int16},
+            drawnVAMaxN1P2: {ID: 0x0213, type: DataType.int16},
+            drawnVAMaxN1P3: {ID: 0x0214, type: DataType.int16},
+            message1: {ID: 0x0215, type: DataType.octetStr},
+            message2: {ID: 0x0216, type: DataType.octetStr},
+            statusRegister: {ID: 0x0217, type: DataType.octetStr},
+            startMobilePoint1: {ID: 0x0218, type: DataType.uint8},
+            stopMobilePoint1: {ID: 0x0219, type: DataType.uint8},
+            startMobilePoint2: {ID: 0x0220, type: DataType.uint8},
+            stopMobilePoint2: {ID: 0x0221, type: DataType.uint8},
+            startMobilePoint3: {ID: 0x0222, type: DataType.uint8},
+            stopMobilePoint3: {ID: 0x0223, type: DataType.uint8},
+            relais: {ID: 0x0224, type: DataType.uint16},
+            daysNumberCurrentCalendar: {ID: 0x0225, type: DataType.uint8},
+            daysNumberNextCalendar: {ID: 0x0226, type: DataType.uint8},
+            daysProfileCurrentCalendar: {ID: 0x0227, type: DataType.octetStr},
+            daysProfileNextCalendar: {ID: 0x0228, type: DataType.octetStr},
+        },
+        commands: {},
+        commandsResponse: {},
     },
     manuSpecificTuya_2: {
         ID: 0xE002,
@@ -4343,6 +4525,50 @@ const Cluster: {
             DownSceneID: {ID: 0x0020, type: DataType.uint8},
             DownGroupID: {ID: 0x0021, type: DataType.uint16},
             SwitchActions: {ID: 0x0001, type: DataType.enum8},
+        },
+        commands: {},
+        commandsResponse: {},
+    },
+    sprutDevice: {
+        ID: 26112,
+        manufacturerCode: 26214,
+        attributes: {
+            debug: {ID: 0, type: DataType.boolean},
+        },
+        commands: {},
+        commandsResponse: {},
+    },
+    sprutVoc: {
+        ID: 26113,
+        manufacturerCode: 26214,
+        attributes: {
+            voc: {ID: 26112, type: DataType.uint16},
+        },
+        commands: {},
+        commandsResponse: {},
+    },
+    sprutNoise: {
+        ID: 26114,
+        manufacturerCode: 26214,
+        attributes: {
+            noise: {ID: 26112, type: DataType.data8},
+            noise_detected: {ID: 26113, type: DataType.bitmap8},
+        },
+        commands: {},
+        commandsResponse: {},
+    },
+    sprutIrBlaster: {
+        ID: 26115,
+        manufacturerCode: 26214,
+        attributes: {},
+        commands: {},
+        commandsResponse: {},
+    },
+    manuSpecificSiglisZigfred: {
+        ID: 0x345,
+        manufacturerCode: 0x129C,
+        attributes: {
+            buttonEvent: {ID: 0x0008, type: DataType.uint32},
         },
         commands: {},
         commandsResponse: {},

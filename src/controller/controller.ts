@@ -217,9 +217,6 @@ class Controller extends events.EventEmitter {
         if (permit) {
             await this.adapter.permitJoin(254, !device ? null : device.networkAddress);
             await this.greenPower.permitJoin(254);
-            if ((await this.adapter.supportsLED()) && !this.options.adapter.disableLED) {
-                await this.adapter.setLED(true);
-            }
 
             // Zigbee 3 networks automatically close after max 255 seconds, keep network open.
             this.permitJoinNetworkClosedTimer = setInterval(async (): Promise<void> => {
@@ -245,9 +242,6 @@ class Controller extends events.EventEmitter {
             this.emit(Events.Events.permitJoinChanged, data);
         } else {
             debug.log('Disable joining');
-            if ((await this.adapter.supportsLED()) && !this.options.adapter.disableLED) {
-                await this.adapter.setLED(false);
-            }
             await this.greenPower.permitJoin(0);
             await this.adapter.permitJoin(0, null);
             const data: Events.PermitJoinChangedPayload = {permitted: false, reason, timeout: this.permitJoinTimeout};
@@ -378,25 +372,10 @@ class Controller extends events.EventEmitter {
     }
 
     /**
-     *  Check if the adapters supports LED
-     */
-    public async supportsLED(): Promise<boolean> {
-        return this.adapter.supportsLED();
-    }
-
-    /**
      *  Set transmit power of the adapter
      */
     public async setTransmitPower(value: number): Promise<void> {
         return this.adapter.setTransmitPower(value);
-    }
-
-    /**
-     *  Enable/Disable the LED
-     */
-    public async setLED(enabled: boolean): Promise<void> {
-        if (!(await this.supportsLED())) throw new Error(`Adapter doesn't support LED`);
-        await this.adapter.setLED(enabled);
     }
 
     private onNetworkAddress(payload: AdapterEvents.NetworkAddressPayload): void {
@@ -407,6 +386,8 @@ class Controller extends events.EventEmitter {
             debug.log(`Network address is from unknown device '${payload.ieeeAddr}'`);
             return;
         }
+
+        this.emit(Events.Events.lastSeenChanged, {device, reason: 'networkAddress'} as Events.LastSeenChangedPayload);
 
         if (device.networkAddress !== payload.networkAddress) {
             debug.log(`Device '${payload.ieeeAddr}' got new networkAddress '${payload.networkAddress}'`);
@@ -428,7 +409,7 @@ class Controller extends events.EventEmitter {
         }
 
         device.updateLastSeen();
-        this.emit(Events.Events.lastSeenChanged, {device: device} as Events.LastSeenChangedPayload);
+        this.emit(Events.Events.lastSeenChanged, {device, reason: 'deviceAnnounce'} as Events.LastSeenChangedPayload);
         device.implicitCheckin();
 
         if (device.networkAddress !== payload.networkAddress) {
@@ -531,7 +512,7 @@ class Controller extends events.EventEmitter {
         }
 
         device.updateLastSeen();
-        this.emit(Events.Events.lastSeenChanged, {device: device} as Events.LastSeenChangedPayload);
+        this.emit(Events.Events.lastSeenChanged, {device, reason: 'deviceJoined'} as Events.LastSeenChangedPayload);
         device.implicitCheckin();
 
         if (!device.interviewCompleted && !device.interviewing) {
@@ -592,7 +573,6 @@ class Controller extends events.EventEmitter {
         }
 
         device.updateLastSeen();
-        this.emit(Events.Events.lastSeenChanged, {device: device} as Events.LastSeenChangedPayload);
         device.implicitCheckin();
         device.linkquality = dataPayload.linkquality;
 
@@ -661,17 +641,13 @@ class Controller extends events.EventEmitter {
                     }
                 }
 
-                endpoint.saveClusterAttributeKeyValue(clusterName, data);
+                endpoint.saveClusterAttributeKeyValue(frame.Cluster.ID, data);
             }
         } else {
             type = 'raw';
             data = dataPayload.data;
-            try {
-                const cluster = ZclUtils.getCluster(dataPayload.clusterID);
-                clusterName = cluster.name;
-            } catch (error) {
-                clusterName = dataPayload.clusterID;
-            }
+            const name = ZclUtils.getCluster(dataPayload.clusterID).name;
+            clusterName = Number.isNaN(Number(name)) ? name : Number(name);
         }
 
         if (type && data) {
@@ -683,6 +659,11 @@ class Controller extends events.EventEmitter {
             };
 
             this.emit(Events.Events.message, eventData);
+            this.emit(Events.Events.lastSeenChanged, 
+                {device, reason: 'messageEmitted'} as Events.LastSeenChangedPayload);
+        } else {
+            this.emit(Events.Events.lastSeenChanged, 
+                {device, reason: 'messageNonEmitted'} as Events.LastSeenChangedPayload);
         }
 
 
